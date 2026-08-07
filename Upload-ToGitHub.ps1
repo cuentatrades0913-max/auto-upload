@@ -178,6 +178,8 @@ function Compress-Folder {
     )
     # Comprime una carpeta a ZIP usando .NET con FileShare.ReadWrite,
     # asi puede leer archivos bloqueados por otros procesos (ej: Chrome).
+    # Estructura del ZIP: 2 carpetas -> <CarpetaNetwork>\...  y  LocalState\Local State
+    $rootName = Split-Path $SourceFolder -Leaf
     $files = Get-ChildItem -LiteralPath $SourceFolder -File -Recurse -Force `
         -ErrorAction SilentlyContinue
     $zipStream = [System.IO.File]::Create($DestinationZip)
@@ -185,7 +187,8 @@ function Compress-Folder {
     try {
         foreach ($f in $files) {
             $rel = $f.FullName.Substring($SourceFolder.Length).TrimStart('\')
-            $entry = $archive.CreateEntry($rel, [System.IO.Compression.CompressionLevel]::Optimal)
+            $entryName = "$rootName\$rel"
+            $entry = $archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
             try {
                 $fs = New-Object System.IO.FileStream($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                 try {
@@ -193,14 +196,14 @@ function Compress-Folder {
                     try { $fs.CopyTo($es) } finally { $es.Dispose() }
                 } finally { $fs.Dispose() }
             } catch {
-                Write-Log "No se pudo incluir '$rel': $($_.Exception.Message)" "DarkYellow"
+                Write-Log "No se pudo incluir '$entryName': $($_.Exception.Message)" "DarkYellow"
             }
         }
 
-        # Archivos extra (ej: Local State) -> raiz del ZIP
+        # Archivos extra (ej: Local State) -> en su propia carpeta LocalState
         foreach ($ex in $ExtraFiles) {
             $exName = Split-Path $ex -Leaf
-            Add-FileToArchive -Archive $archive -FilePath $ex -EntryName "extra_$exName"
+            Add-FileToArchive -Archive $archive -FilePath $ex -EntryName "LocalState\$exName"
         }
     } finally {
         $archive.Dispose()
