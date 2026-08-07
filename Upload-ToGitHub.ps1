@@ -27,6 +27,9 @@ param(
 )
 
 # ---------- Helpers ----------
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
 function Write-Log {
     param([string]$Msg, [ConsoleColor]$Color = "White")
     Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Msg" -ForegroundColor $Color
@@ -110,6 +113,37 @@ function Get-GitHubDefaultBranch {
     } catch { return 'main' }
 }
 
+function Compress-Folder {
+    param(
+        [string]$SourceFolder,
+        [string]$DestinationZip
+    )
+    # Comprime una carpeta a ZIP usando .NET con FileShare.ReadWrite,
+    # asi puede leer archivos bloqueados por otros procesos (ej: Chrome).
+    $files = Get-ChildItem -LiteralPath $SourceFolder -File -Recurse -Force `
+        -ErrorAction SilentlyContinue
+    $zipStream = [System.IO.File]::Create($DestinationZip)
+    $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in $files) {
+            $rel = $f.FullName.Substring($SourceFolder.Length).TrimStart('\')
+            $entry = $archive.CreateEntry($rel, [System.IO.Compression.CompressionLevel]::Optimal)
+            try {
+                $fs = New-Object System.IO.FileStream($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    $es = $entry.Open()
+                    try { $fs.CopyTo($es) } finally { $es.Dispose() }
+                } finally { $fs.Dispose() }
+            } catch {
+                Write-Log "No se pudo incluir '$rel': $($_.Exception.Message)" "DarkYellow"
+            }
+        }
+    } finally {
+        $archive.Dispose()
+        $zipStream.Dispose()
+    }
+}
+
 # ---------- Principal ----------
 $ErrorActionPreference = 'Stop'
 $script:ComputerName   = $env:COMPUTERNAME
@@ -188,7 +222,7 @@ try {
     $script:ZipPath = Join-Path $ZipOutputDir $zipName
 
     Write-Log "Creando ZIP: $script:ZipPath" "Yellow"
-    Compress-Archive -Path $sourceFolder -DestinationPath $script:ZipPath -CompressionLevel Optimal -Force
+    Compress-Folder -SourceFolder $sourceFolder -DestinationZip $script:ZipPath
 
     $zipLen = (Get-Item -LiteralPath $script:ZipPath).Length
     if ($zipLen -gt 50MB) {
