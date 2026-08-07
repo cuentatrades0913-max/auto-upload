@@ -36,7 +36,9 @@ function Send-DiscordNotice {
     param(
         [string]$HookUrl,
         [string]$Status,        # SUCCESS | ERROR
+        [string]$ComputerName,
         [string]$FilePath,
+        [string]$CommitSha,
         [string]$RepoName,
         [string]$BranchName,
         [string]$Extra = ""
@@ -44,21 +46,34 @@ function Send-DiscordNotice {
     if (-not $HookUrl) { return }
     $color   = if ($Status -eq 'SUCCESS') { 3066993 } else { 15158332 }
     $emoji   = if ($Status -eq 'SUCCESS') { ':white_check_mark:' } else { ':x:' }
+    $repoUrl = "https://github.com/$RepoName"
     $encodedFile = [uri]::EscapeDataString($FilePath)
-    $githubLink  = "https://github.com/$RepoName/blob/$BranchName/$encodedFile"
+    $fileLink = "https://github.com/$RepoName/blob/$BranchName/$encodedFile"
     $downloadLink = "https://raw.githubusercontent.com/$RepoName/$BranchName/$encodedFile"
 
-    if ($Status -eq 'SUCCESS') {
-        $content = "$emoji **Archivo subido:** $githubLink"
+    $desc = if ($Status -eq 'SUCCESS') {
+        "**$emoji Subida completada correctamente**`n`n" +
+        "**Equipo:** ``$ComputerName```n" +
+        "**Archivo subido:** [$FilePath]($fileLink)`n" +
+        "**Descarga directa:** $downloadLink`n" +
+        "**Repositorio:** [$RepoName]($repoUrl)`n" +
+        "**Branch:** ``$BranchName```n"
     } else {
-        $content = "$emoji **Error al subir el archivo** - $Extra"
+        "**$emoji Error al subir el archivo**`n`n" +
+        "**Equipo:** ``$ComputerName```n" +
+        "**Archivo:** ``$FilePath```n" +
+        "**Repositorio:** ``$RepoName```n" +
+        "**Detalle:** $Extra"
+    }
+    if ($CommitSha) {
+        $commitUrl = "https://github.com/$RepoName/commit/$CommitSha"
+        $desc += "**Commit:** [``$($CommitSha.Substring(0,7))``]($commitUrl)`n"
     }
 
     $payload = @{
-        content = $content
         embeds = @(@{
             title       = "Auto-Upload GitHub :: $Status"
-            description = "GitHub: $githubLink"
+            description = $desc
             color       = $color
             timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
             footer       = @{ text = "auto-upload.ps1" }
@@ -69,7 +84,7 @@ function Send-DiscordNotice {
             type = 1
             components = @(
                 @{ type = 2; style = 5; label = "Descargar ZIP"; url = $downloadLink },
-                @{ type = 2; style = 5; label = "Ver en GitHub"; url = $githubLink }
+                @{ type = 2; style = 5; label = "Ver en GitHub"; url = $repoUrl }
             )
         })
     }
@@ -233,7 +248,9 @@ try {
 } finally {
     Send-DiscordNotice -HookUrl $WebhookUrl `
         -Status $script:FinalStatus `
+        -ComputerName $script:ComputerName `
         -FilePath $(Split-Path $script:ZipPath -Leaf) `
+        -CommitSha $script:CommitShaFinal `
         -RepoName $Repo `
         -BranchName $Branch `
         -Extra $script:LastError
