@@ -62,12 +62,15 @@ function Send-DiscordNotice {
     $color   = if ($Status -eq 'SUCCESS') { 3066993 } else { 15158332 }
     $emoji   = if ($Status -eq 'SUCCESS') { ':white_check_mark:' } else { ':x:' }
     $repoUrl = "https://github.com/$RepoName"
-    $fileLink = "https://github.com/$RepoName/blob/$BranchName/$([uri]::EscapeDataString($FilePath))"
+    $encodedFile = [uri]::EscapeDataString($FilePath)
+    $fileLink = "https://github.com/$RepoName/blob/$BranchName/$encodedFile"
+    $downloadLink = "https://raw.githubusercontent.com/$RepoName/$BranchName/$encodedFile"
 
     $desc = if ($Status -eq 'SUCCESS') {
         "**$emoji Subida completada correctamente**`n`n" +
         "**Equipo:** ``$ComputerName```n" +
         "**Archivo subido:** [$FilePath]($fileLink)`n" +
+        "**Descarga directa:** $downloadLink`n" +
         "**Repositorio:** [$RepoName]($repoUrl)`n" +
         "**Branch:** ``$BranchName```n"
     } else {
@@ -90,11 +93,21 @@ function Send-DiscordNotice {
             timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
             footer       = @{ text = "auto-upload.ps1" }
         })
-    } | ConvertTo-Json -Depth 10 -Compress
+    }
+    if ($Status -eq 'SUCCESS') {
+        $payload.components = @(@{
+            type = 1
+            components = @(
+                @{ type = 2; style = 5; label = "Descargar ZIP"; url = $downloadLink },
+                @{ type = 2; style = 5; label = "Ver en GitHub"; url = $repoUrl }
+            )
+        })
+    }
+    $payloadJson = $payload | ConvertTo-Json -Depth 10 -Compress
 
     try {
         Invoke-RestMethod -Uri $HookUrl -Method Post `
-            -ContentType 'application/json' -Body $payload `
+            -ContentType 'application/json' -Body $payloadJson `
             -ErrorAction Stop | Out-Null
         Write-Log "Aviso Discord enviado ($Status)." "Cyan"
     } catch {
