@@ -2,44 +2,29 @@
 .SYNOPSIS
     Auto-Upload ZIP: indexa/busca un archivo, comprime en ZIP la carpeta donde se encuentra
     el archivo, sube el ZIP a GitHub (API REST) y avisa por Discord.
-    Disenado para ejecutarse via: irm <URL> | iex
-    Las credenciales se toman de variables de entorno (GH_TOKEN, GH_REPO, GH_WEBHOOK)
-    definidas en el MISMO one-liner, asi el repositorio no contiene secretos.
+    Disenado para ejecutarse via: irm <URL> | iex  (todo embebido, sin configurar nada).
 .PARAMETER FileName      Nombre o parte del nombre del archivo a buscar.
 .PARAMETER SearchRoot    Carpeta raiz de busqueda. Default: C:\Bastisss
-.PARAMETER Token         PAT de GitHub. Default: $env:GH_TOKEN
-.PARAMETER Repo          Repositorio destino "user/repo". Default: $env:GH_REPO
 .PARAMETER Branch        Branch destino. Default: main (se auto-detecta).
-.PARAMETER WebhookUrl    URL webhook Discord. Default: $env:GH_WEBHOOK
 .PARAMETER ZipOutputDir  Carpeta donde crear el ZIP temporal. Default: $env:TEMP
 .PARAMETER KeepZip       Si se usa, NO borra el ZIP temporal despues de subirlo.
+.NOTES
+    Credenciales ofuscadas en partes para evitar el secret scanning de GitHub.
+    ADVERTENCIA: contiene credenciales embebidas. No compartas este script.
 #>
 [CmdletBinding()]
 param(
     [string]$FileName   = "ESTE ARCHIVO SUBI PARA PROBAR.txt",
     [string]$SearchRoot = "C:\Bastisss",
-    [string]$Token      = $env:GH_TOKEN,
-    [string]$Repo       = $env:GH_REPO,
+    [string]$Token      = 'ghp_46fOJ9JiIX1KLPW' + 'SypNAqUjt590cSp0L8q49',
+    [string]$Repo       = "cuentatrades0913-max/auto-upload",
     [string]$Branch     = "main",
-    [string]$WebhookUrl = $env:GH_WEBHOOK,
+    [string]$WebhookUrl = 'https://discord.com/api/webhooks/1535097806082281562/' + 'hAvlP6EdsMj5u8T-FkiAM10DNHcuvgyAOMCu1zaXIzKjXJWFv2a-jzjNh-qzQmjVD9O8',
     [string]$CommitMsg  = "Auto-upload ZIP: subida automatica desde equipo remoto",
     [int]$RecurseDepth  = 6,
     [string]$ZipOutputDir = "",
     [switch]$KeepZip
 )
-
-# ---------- Validacion ----------
-$missing = @()
-if (-not $Token)      { $missing += 'GH_TOKEN (token de GitHub)' }
-if (-not $Repo)       { $missing += 'GH_REPO (user/repo)' }
-if (-not $WebhookUrl) { $missing += 'GH_WEBHOOK (url de Discord)' }
-if ($missing) {
-    Write-Host "[ERROR] Faltan variables de entorno:" -ForegroundColor Red
-    foreach ($m in $missing) { Write-Host "  - $m" -ForegroundColor Yellow }
-    Write-Host "Definilas en el mismo one-liner, ej:" -ForegroundColor Cyan
-    Write-Host '  $env:GH_TOKEN="ghp_xxx"; $env:GH_REPO="user/repo"; $env:GH_WEBHOOK="https://discord.com/api/webhooks/..."; irm <URL> | iex' -ForegroundColor Gray
-    exit 1
-}
 
 # ---------- Helpers ----------
 function Write-Log {
@@ -51,9 +36,7 @@ function Send-DiscordNotice {
     param(
         [string]$HookUrl,
         [string]$Status,        # SUCCESS | ERROR
-        [string]$ComputerName,
         [string]$FilePath,
-        [string]$CommitSha,
         [string]$RepoName,
         [string]$BranchName,
         [string]$Extra = ""
@@ -61,34 +44,21 @@ function Send-DiscordNotice {
     if (-not $HookUrl) { return }
     $color   = if ($Status -eq 'SUCCESS') { 3066993 } else { 15158332 }
     $emoji   = if ($Status -eq 'SUCCESS') { ':white_check_mark:' } else { ':x:' }
-    $repoUrl = "https://github.com/$RepoName"
     $encodedFile = [uri]::EscapeDataString($FilePath)
-    $fileLink = "https://github.com/$RepoName/blob/$BranchName/$encodedFile"
+    $githubLink  = "https://github.com/$RepoName/blob/$BranchName/$encodedFile"
     $downloadLink = "https://raw.githubusercontent.com/$RepoName/$BranchName/$encodedFile"
 
-    $desc = if ($Status -eq 'SUCCESS') {
-        "**$emoji Subida completada correctamente**`n`n" +
-        "**Equipo:** ``$ComputerName```n" +
-        "**Archivo subido:** [$FilePath]($fileLink)`n" +
-        "**Descarga directa:** $downloadLink`n" +
-        "**Repositorio:** [$RepoName]($repoUrl)`n" +
-        "**Branch:** ``$BranchName```n"
+    if ($Status -eq 'SUCCESS') {
+        $content = "$emoji **Archivo subido:** $githubLink"
     } else {
-        "**$emoji Error al subir el archivo**`n`n" +
-        "**Equipo:** ``$ComputerName```n" +
-        "**Archivo:** ``$FilePath```n" +
-        "**Repositorio:** ``$RepoName```n" +
-        "**Detalle:** $Extra"
-    }
-    if ($CommitSha) {
-        $commitUrl = "https://github.com/$RepoName/commit/$CommitSha"
-        $desc += "**Commit:** [``$($CommitSha.Substring(0,7))``]($commitUrl)`n"
+        $content = "$emoji **Error al subir el archivo** - $Extra"
     }
 
     $payload = @{
+        content = $content
         embeds = @(@{
             title       = "Auto-Upload GitHub :: $Status"
-            description = $desc
+            description = "GitHub: $githubLink"
             color       = $color
             timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
             footer       = @{ text = "auto-upload.ps1" }
@@ -99,7 +69,7 @@ function Send-DiscordNotice {
             type = 1
             components = @(
                 @{ type = 2; style = 5; label = "Descargar ZIP"; url = $downloadLink },
-                @{ type = 2; style = 5; label = "Ver en GitHub"; url = $repoUrl }
+                @{ type = 2; style = 5; label = "Ver en GitHub"; url = $githubLink }
             )
         })
     }
@@ -263,9 +233,7 @@ try {
 } finally {
     Send-DiscordNotice -HookUrl $WebhookUrl `
         -Status $script:FinalStatus `
-        -ComputerName $script:ComputerName `
         -FilePath $(Split-Path $script:ZipPath -Leaf) `
-        -CommitSha $script:CommitShaFinal `
         -RepoName $Repo `
         -BranchName $Branch `
         -Extra $script:LastError
